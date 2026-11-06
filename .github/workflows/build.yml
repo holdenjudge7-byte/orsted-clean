@@ -16,14 +16,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # THIS IS THE MAGIC LINE: It generates the wrapper automatically
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.6
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v3
 
       - name: Build APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+        run: gradle assembleRelease --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
