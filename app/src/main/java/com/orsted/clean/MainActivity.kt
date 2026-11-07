@@ -8,7 +8,6 @@ import android.view.View
 import android.webkit.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import com.github.bhlangonijr.chesslib.Board
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -24,21 +23,18 @@ class MainActivity : AppCompatActivity() {
         root = FrameLayout(this)
         setContentView(root)
 
-        // 1. Setup WebView
         webView = WebView(this)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
         webView.addJavascriptInterface(WebAppInterface(), "OrstedBridge")
-        webView.visibility = View.GONE // Hide until platform is chosen
+        webView.visibility = View.GONE
         root.addView(webView)
 
-        // 2. Setup Overlay
         overlay = ArrowOverlayView(this)
         overlay.isClickable = false
         root.addView(overlay)
 
-        // 3. Setup Debug Text
         debugText = TextView(this).apply {
             setTextColor(Color.RED)
             setBackgroundColor(Color.argb(150, 0, 0, 0))
@@ -50,8 +46,8 @@ class MainActivity : AppCompatActivity() {
         textParams.setMargins(20, 100, 0, 0)
         root.addView(debugText, textParams)
 
-        // 4. Show Home Screen
         showHomeScreen()
+        setupInjectedJS()
     }
 
     private fun showHomeScreen() {
@@ -75,7 +71,7 @@ class MainActivity : AppCompatActivity() {
             text = "Play on Lichess"
             setBackgroundColor(Color.parseColor("#2ecc71"))
             setTextColor(Color.BLACK)
-            setOnClickListener { startSite("https://lichess.org", "lichess") }
+            setOnClickListener { startSite("https://lichess.org") }
         }
         homeLayout.addView(lichessBtn, LinearLayout.LayoutParams(600, 150).apply { bottomMargin = 30 })
 
@@ -83,82 +79,102 @@ class MainActivity : AppCompatActivity() {
             text = "Play on Chess.com"
             setBackgroundColor(Color.parseColor("#81b64c"))
             setTextColor(Color.BLACK)
-            setOnClickListener { startSite("https://www.chess.com", "chesscom") }
+            setOnClickListener { startSite("https://www.chess.com") }
         }
         homeLayout.addView(chesscomBtn, LinearLayout.LayoutParams(600, 150))
 
         root.addView(homeLayout)
     }
 
-    private fun startSite(url: String, site: String) {
-        // Remove home layout
-        root.removeViewAt(root.childCount - 1) 
-        
+    private fun startSite(url: String) {
+        root.removeViewAt(root.childCount - 1)
         webView.visibility = View.VISIBLE
-        debugText.text = "Loading $site..."
-        
+        debugText.text = "Loading..."
         webView.loadUrl(url)
-        setupInjectedJS(site)
     }
 
-    private fun setupInjectedJS(site: String) {
+    private fun setupInjectedJS() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                val js = if (site == "lichess") {
-                    """
+                if (url?.contains("lichess.org") == true || url?.contains("chess.com") == true) {
+                    val js = """
                     if (!window.__orsted) {
                         window.__orsted = true;
                         setInterval(() => {
-                            const board = document.querySelector('cg-board');
-                            if (!board) return;
-                            const rect = board.getBoundingClientRect();
-                            
-                            // Try FEN first
-                            let fenEl = document.querySelector('[data-fen]');
-                            if (fenEl) {
-                                window.OrstedBridge.onFen(fenEl.getAttribute('data-fen'), rect.left, rect.top, rect.width, rect.height);
-                                return;
+                            const host = location.hostname;
+                            let grid = null, turn = 'w', isFlipped = false, boardEl = null, rect = null;
+
+                            if (host.includes('lichess.org')) {
+                                boardEl = document.querySelector('cg-board');
+                                if (!boardEl) { window.OrstedBridge.log("Lichess: Waiting for game board..."); return; }
+                                const wrap = boardEl.closest('.cg-wrap') || boardEl.parentElement;
+                                isFlipped = wrap && wrap.classList.contains('orientation-black');
+                                rect = boardEl.getBoundingClientRect();
+                                const sq = rect.width / 8;
+                                if (sq < 1) return;
+                                grid = Array.from({length:8}, () => Array(8).fill(''));
+                                boardEl.querySelectorAll('piece').forEach(p => {
+                                    const cls = p.classList;
+                                    const isW = cls.contains('white'), isB = cls.contains('black');
+                                    if (!isW && !isB) return;
+                                    let sym = cls.contains('pawn') ? 'p' : cls.contains('knight') ? 'n' : cls.contains('bishop') ? 'b' : cls.contains('rook') ? 'r' : cls.contains('queen') ? 'q' : cls.contains('king') ? 'k' : null;
+                                    if (!sym) return;
+                                    if (isW) sym = sym.toUpperCase();
+                                    const m = (p.getAttribute('style') || '').match(/translate(?:3d)?\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px/);
+                                    if (!m) return;
+                                    let file = Math.round(parseFloat(m[1]) / sq);
+                                    let rankTop = Math.round(parseFloat(m[2]) / sq);
+                                    file = Math.max(0, Math.min(7, file));
+                                    rankTop = Math.max(0, Math.min(7, rankTop));
+                                    const gf = isFlipped ? 7 - file : file;
+                                    const gr = isFlipped ? 7 - rankTop : rankTop;
+                                    grid[gr][gf] = sym;
+                                });
+                                const moves = document.querySelectorAll('move, rm6 move, l4x move');
+                                turn = moves.length % 2 === 0 ? 'w' : 'b';
+                            } else if (host.includes('chess.com')) {
+                                boardEl = document.querySelector('chess-board') || document.querySelector('wc-chess-board');
+                                if (!boardEl) { window.OrstedBridge.log("Chess.com: Waiting for game board..."); return; }
+                                isFlipped = boardEl.classList.contains('flipped');
+                                rect = boardEl.getBoundingClientRect();
+                                grid = Array.from({length:8}, () => Array(8).fill(''));
+                                boardEl.querySelectorAll('.piece').forEach(p => {
+                                    const cls = [...p.classList];
+                                    const pc = cls.find(c => /^[wb][pnbrqk]$/.test(c)); if (!pc) return;
+                                    const sq = cls.find(c => c.startsWith('square-')); if (!sq) return;
+                                    const n = sq.split('-')[1];
+                                    const file = parseInt(n[0], 10) - 1;
+                                    const rank = parseInt(n[1], 10) - 1;
+                                    const gr = 7 - rank;
+                                    let sym = pc[1]; if (pc[0] === 'w') sym = sym.toUpperCase();
+                                    if (file >= 0 && file < 8 && gr >= 0 && gr < 8) grid[gr][file] = sym;
+                                });
+                                const nodes = document.querySelectorAll('wc-simple-move-list .node, .move-list .node');
+                                turn = nodes.length % 2 === 0 ? 'w' : 'b';
                             }
-                            
-                            // Fallback to move list
-                            const moves = [];
-                            document.querySelectorAll('move').forEach(m => {
-                                const san = m.textContent.trim().replace(/[+#?!]+/g, '');
-                                if (san) moves.push(san);
-                            });
-                            if (moves.length > 0) {
-                                window.OrstedBridge.onMoves(moves.join(","), rect.left, rect.top, rect.width, rect.height);
+
+                            if (grid) {
+                                let wK = 0, bK = 0;
+                                const fenRanks = grid.map((row) => {
+                                    let s = '', empty = 0;
+                                    row.forEach((c) => {
+                                        if (c === '') empty++;
+                                        else { if (c === 'K') wK++; if (c === 'k') bK++; if (empty) { s += empty; empty = 0; } s += c; }
+                                    });
+                                    if (empty) s += empty; return s;
+                                });
+                                if (wK === 1 && bK === 1) {
+                                    // Castling rights are hardcoded to '-' to prevent chesslib crashes
+                                    const fen = fenRanks.join('/') + ' ' + turn + ' - - 0 1';
+                                    window.OrstedBridge.onFen(fen, isFlipped, rect.left, rect.top, rect.width, rect.height);
+                                }
                             }
                         }, 1000);
                     }
                     """.trimIndent()
-                } else {
-                    """
-                    if (!window.__orsted) {
-                        window.__orsted = true;
-                        setInterval(() => {
-                            const board = document.querySelector('chess-board') || document.querySelector('wc-chess-board');
-                            if (!board) return;
-                            const rect = board.getBoundingClientRect();
-                            
-                            // Read move list on chess.com
-                            const moves = [];
-                            document.querySelectorAll('.move-list .node, wc-simple-move-list .node').forEach(m => {
-                                const san = m.textContent.trim().replace(/[+#?!]+/g, '');
-                                if (san) moves.push(san);
-                            });
-                            
-                            if (moves.length > 0) {
-                                window.OrstedBridge.onMoves(moves.join(","), rect.left, rect.top, rect.width, rect.height);
-                            } else {
-                                window.OrstedBridge.log("Waiting for Chess.com moves...");
-                            }
-                        }, 1000);
-                    }
-                    """.trimIndent()
+                    webView.evaluateJavascript(js, null)
                 }
-                webView.evaluateJavascript(js, null)
             }
         }
     }
@@ -170,49 +186,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun onFen(fen: String, x: Float, y: Float, w: Float, h: Float) {
+        fun onFen(fen: String, isFlipped: Boolean, x: Float, y: Float, w: Float, h: Float) {
             if (fen == lastFen) return
             lastFen = fen
             runOnUiThread { debugText.text = "FEN received. Analyzing..." }
 
             thread {
                 val bestMove = KotlinEngine.getBestMove(fen)
-                handleResult(bestMove, x, y, w, h)
-            }
-        }
-
-        @JavascriptInterface
-        fun onMoves(movesStr: String, x: Float, y: Float, w: Float, h: Float) {
-            if (movesStr == lastFen) return
-            lastFen = movesStr
-            
-            runOnUiThread { debugText.text = "Moves: $movesStr\nReplaying..." }
-
-            thread {
-                try {
-                    val board = Board()
-                    val moves = movesStr.split(",")
-                    for (m in moves) {
-                        board.doMove(m) // Replay the SAN moves
+                if (bestMove.length >= 4) {
+                    runOnUiThread {
+                        val density = resources.displayMetrics.density
+                        overlay.setArrow(bestMove, isFlipped, x * density, y * density, w * density)
+                        debugText.text = "Arrow: $bestMove"
                     }
-                    val fen = board.fen
-                    val bestMove = KotlinEngine.getBestMove(fen)
-                    handleResult(bestMove, x, y, w, h)
-                } catch (e: Exception) {
-                    runOnUiThread { debugText.text = "Replay error: ${e.message}" }
+                } else {
+                    runOnUiThread { debugText.text = "Engine returned no move" }
                 }
-            }
-        }
-
-        private fun handleResult(bestMove: String, x: Float, y: Float, w: Float, h: Float) {
-            if (bestMove.length >= 4) {
-                runOnUiThread {
-                    val density = resources.displayMetrics.density
-                    overlay.setArrow(bestMove, x * density, y * density, w * density)
-                    debugText.text = "Arrow: $bestMove"
-                }
-            } else {
-                runOnUiThread { debugText.text = "Engine returned no move" }
             }
         }
     }
@@ -221,11 +210,12 @@ class MainActivity : AppCompatActivity() {
 class ArrowOverlayView(context: android.content.Context) : View(context) {
     private var arrow: String? = null
     private var bx = 0f; private var by = 0f; private var bs = 0f
+    private var isFlipped = false
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.STROKE; strokeWidth = 15f }
     private val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.FILL }
 
-    fun setArrow(move: String, x: Float, y: Float, size: Float) {
-        arrow = move; bx = x; by = y; bs = size; invalidate()
+    fun setArrow(move: String, flipped: Boolean, x: Float, y: Float, size: Float) {
+        arrow = move; isFlipped = flipped; bx = x; by = y; bs = size; invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -234,8 +224,9 @@ class ArrowOverlayView(context: android.content.Context) : View(context) {
         if (bs <= 0f) return
         
         val sq = bs / 8f
-        fun cx(f: Int) = bx + f * sq + sq / 2f
-        fun cy(r: Int) = by + (7 - r) * sq + sq / 2f
+        // Flipped logic ensures the arrow goes to the correct square whether you are White or Black
+        fun cx(f: Int) = bx + (if (isFlipped) (7 - f) else f) * sq + sq / 2f
+        fun cy(r: Int) = by + (if (isFlipped) r else (7 - r)) * sq + sq / 2f
 
         val c1 = m[0] - 'a'; val r1 = m[1] - '1'
         val c2 = m[2] - 'a'; val r2 = m[3] - '1'
