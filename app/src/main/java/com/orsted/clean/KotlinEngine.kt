@@ -1,8 +1,10 @@
 package com.orsted.clean
 
 import com.github.bhlangonijr.chesslib.Board
-import com.github.bhlangonijr.chesslib.Side
+import com.github.bhlangonijr.chesslib.Piece
 import com.github.bhlangonijr.chesslib.PieceType
+import com.github.bhlangonijr.chesslib.Side
+import com.github.bhlangonijr.chesslib.Square
 import com.github.bhlangonijr.chesslib.move.Move
 import kotlin.math.max
 import kotlin.math.min
@@ -73,9 +75,10 @@ object KotlinEngine {
 
     private fun evaluateBoard(board: Board): Int {
         var score = 0
-        val pieces = board.boardArray
-        for (piece in pieces) {
-            if (piece != null) {
+        // Loop through all 64 squares using the library's Square enum
+        for (square in Square.values()) {
+            val piece = board.getPiece(square)
+            if (piece != Piece.NONE) {
                 val valScore = when (piece.pieceType) {
                     PieceType.PAWN -> 100
                     PieceType.KNIGHT -> 320
