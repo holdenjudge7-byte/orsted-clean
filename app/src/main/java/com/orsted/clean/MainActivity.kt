@@ -3,15 +3,16 @@ package com.orsted.clean
 import android.annotation.SuppressLint
 import android.graphics.*
 import android.os.Bundle
-import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.webkit.*
-import android.widget.FrameLayout
-import android.widget.TextView
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import com.github.bhlangonijr.chesslib.Board
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
+    private lateinit var root: FrameLayout
     private lateinit var webView: WebView
     private lateinit var overlay: ArrowOverlayView
     private lateinit var debugText: TextView
@@ -20,75 +21,144 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = FrameLayout(this)
+        root = FrameLayout(this)
         setContentView(root)
 
+        // 1. Setup WebView
         webView = WebView(this)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
-        
         webView.addJavascriptInterface(WebAppInterface(), "OrstedBridge")
-        webView.loadUrl("https://lichess.org")
+        webView.visibility = View.GONE // Hide until platform is chosen
         root.addView(webView)
 
-        // The Overlay that draws the arrow
+        // 2. Setup Overlay
         overlay = ArrowOverlayView(this)
         overlay.isClickable = false
         root.addView(overlay)
 
-        // DEBUG TEXT: This will show us what is happening
+        // 3. Setup Debug Text
         debugText = TextView(this).apply {
             setTextColor(Color.RED)
             setBackgroundColor(Color.argb(150, 0, 0, 0))
             textSize = 12f
             setPadding(20, 20, 20, 20)
-            text = "Waiting for board..."
+            text = "Select a platform"
         }
-        val textParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        )
+        val textParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         textParams.setMargins(20, 100, 0, 0)
         root.addView(debugText, textParams)
 
-        setupInjectedJS()
+        // 4. Show Home Screen
+        showHomeScreen()
     }
 
-    private fun setupInjectedJS() {
+    private fun showHomeScreen() {
+        val homeLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#0a0a0a"))
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+
+        val title = TextView(this).apply {
+            text = "⚡ ORSTED"
+            setTextColor(Color.parseColor("#2ecc71"))
+            textSize = 32f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 60)
+        }
+        homeLayout.addView(title)
+
+        val lichessBtn = Button(this).apply {
+            text = "Play on Lichess"
+            setBackgroundColor(Color.parseColor("#2ecc71"))
+            setTextColor(Color.BLACK)
+            setOnClickListener { startSite("https://lichess.org", "lichess") }
+        }
+        homeLayout.addView(lichessBtn, LinearLayout.LayoutParams(600, 150).apply { bottomMargin = 30 })
+
+        val chesscomBtn = Button(this).apply {
+            text = "Play on Chess.com"
+            setBackgroundColor(Color.parseColor("#81b64c"))
+            setTextColor(Color.BLACK)
+            setOnClickListener { startSite("https://www.chess.com", "chesscom") }
+        }
+        homeLayout.addView(chesscomBtn, LinearLayout.LayoutParams(600, 150))
+
+        root.addView(homeLayout)
+    }
+
+    private fun startSite(url: String, site: String) {
+        // Remove home layout
+        root.removeViewAt(root.childCount - 1) 
+        
+        webView.visibility = View.VISIBLE
+        debugText.text = "Loading $site..."
+        
+        webView.loadUrl(url)
+        setupInjectedJS(site)
+    }
+
+    private fun setupInjectedJS(site: String) {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                if (url?.contains("lichess.org") == true) {
-                    val js = """
-                        if (!window.__orsted) {
-                            window.__orsted = true;
-                            setInterval(() => {
-                                const board = document.querySelector('cg-board');
-                                if (!board) { 
-                                    window.OrstedBridge.log("No board found"); 
-                                    return; 
-                                }
-                                
-                                const rect = board.getBoundingClientRect();
-                                
-                                // Try multiple ways to find the FEN on Lichess
-                                let fenEl = document.querySelector('.round__app[data-fen]') || 
-                                            document.querySelector('[data-fen]') ||
-                                            document.querySelector('body[data-fen]');
-                                
-                                if (!fenEl) { 
-                                    window.OrstedBridge.log("No FEN found"); 
-                                    return; 
-                                }
-                                
-                                const fen = fenEl.getAttribute('data-fen');
-                                window.OrstedBridge.onFen(fen, rect.left, rect.top, rect.width, rect.height);
-                            }, 1000);
-                        }
+                val js = if (site == "lichess") {
+                    """
+                    if (!window.__orsted) {
+                        window.__orsted = true;
+                        setInterval(() => {
+                            const board = document.querySelector('cg-board');
+                            if (!board) return;
+                            const rect = board.getBoundingClientRect();
+                            
+                            // Try FEN first
+                            let fenEl = document.querySelector('[data-fen]');
+                            if (fenEl) {
+                                window.OrstedBridge.onFen(fenEl.getAttribute('data-fen'), rect.left, rect.top, rect.width, rect.height);
+                                return;
+                            }
+                            
+                            // Fallback to move list
+                            const moves = [];
+                            document.querySelectorAll('move').forEach(m => {
+                                const san = m.textContent.trim().replace(/[+#?!]+/g, '');
+                                if (san) moves.push(san);
+                            });
+                            if (moves.length > 0) {
+                                window.OrstedBridge.onMoves(moves.join(","), rect.left, rect.top, rect.width, rect.height);
+                            }
+                        }, 1000);
+                    }
                     """.trimIndent()
-                    webView.evaluateJavascript(js, null)
+                } else {
+                    """
+                    if (!window.__orsted) {
+                        window.__orsted = true;
+                        setInterval(() => {
+                            const board = document.querySelector('chess-board') || document.querySelector('wc-chess-board');
+                            if (!board) return;
+                            const rect = board.getBoundingClientRect();
+                            
+                            // Read move list on chess.com
+                            const moves = [];
+                            document.querySelectorAll('.move-list .node, wc-simple-move-list .node').forEach(m => {
+                                const san = m.textContent.trim().replace(/[+#?!]+/g, '');
+                                if (san) moves.push(san);
+                            });
+                            
+                            if (moves.length > 0) {
+                                window.OrstedBridge.onMoves(moves.join(","), rect.left, rect.top, rect.width, rect.height);
+                            } else {
+                                window.OrstedBridge.log("Waiting for Chess.com moves...");
+                            }
+                        }, 1000);
+                    }
+                    """.trimIndent()
                 }
+                webView.evaluateJavascript(js, null)
             }
         }
     }
@@ -103,25 +173,46 @@ class MainActivity : AppCompatActivity() {
         fun onFen(fen: String, x: Float, y: Float, w: Float, h: Float) {
             if (fen == lastFen) return
             lastFen = fen
-
             runOnUiThread { debugText.text = "FEN received. Analyzing..." }
 
             thread {
+                val bestMove = KotlinEngine.getBestMove(fen)
+                handleResult(bestMove, x, y, w, h)
+            }
+        }
+
+        @JavascriptInterface
+        fun onMoves(movesStr: String, x: Float, y: Float, w: Float, h: Float) {
+            if (movesStr == lastFen) return
+            lastFen = movesStr
+            
+            runOnUiThread { debugText.text = "Moves: $movesStr\nReplaying..." }
+
+            thread {
                 try {
-                    val bestMove = KotlinEngine.getBestMove(fen)
-                    if (bestMove.length >= 4) {
-                        runOnUiThread {
-                            val density = resources.displayMetrics.density
-                            overlay.setArrow(bestMove, x * density, y * density, w * density)
-                            debugText.text = "Arrow: $bestMove"
-                        }
-                    } else {
-                        runOnUiThread { debugText.text = "Engine returned no move" }
+                    val board = Board()
+                    val moves = movesStr.split(",")
+                    for (m in moves) {
+                        board.doMove(m) // Replay the SAN moves
                     }
-                } catch (e: Throwable) {
-                    val errorMsg = "Engine Crash: ${e.message}"
-                    runOnUiThread { debugText.text = errorMsg }
+                    val fen = board.fen
+                    val bestMove = KotlinEngine.getBestMove(fen)
+                    handleResult(bestMove, x, y, w, h)
+                } catch (e: Exception) {
+                    runOnUiThread { debugText.text = "Replay error: ${e.message}" }
                 }
+            }
+        }
+
+        private fun handleResult(bestMove: String, x: Float, y: Float, w: Float, h: Float) {
+            if (bestMove.length >= 4) {
+                runOnUiThread {
+                    val density = resources.displayMetrics.density
+                    overlay.setArrow(bestMove, x * density, y * density, w * density)
+                    debugText.text = "Arrow: $bestMove"
+                }
+            } else {
+                runOnUiThread { debugText.text = "Engine returned no move" }
             }
         }
     }
@@ -143,7 +234,6 @@ class ArrowOverlayView(context: android.content.Context) : View(context) {
         if (bs <= 0f) return
         
         val sq = bs / 8f
-        // Assuming White's perspective for Lichess default layout
         fun cx(f: Int) = bx + f * sq + sq / 2f
         fun cy(r: Int) = by + (7 - r) * sq + sq / 2f
 
