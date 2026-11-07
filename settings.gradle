@@ -10,7 +10,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // THIS LINE ALLOWS GRADLE TO DOWNLOAD CHESSLIB
         maven { url 'https://jitpack.io' }
     }
 }
