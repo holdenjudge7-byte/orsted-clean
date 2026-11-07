@@ -7,12 +7,15 @@ import android.util.Log
 import android.view.View
 import android.webkit.*
 import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var overlay: ArrowOverlayView
+    private lateinit var debugText: TextView
+    private var lastFen = ""
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,9 +32,25 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://lichess.org")
         root.addView(webView)
 
+        // The Overlay that draws the arrow
         overlay = ArrowOverlayView(this)
         overlay.isClickable = false
         root.addView(overlay)
+
+        // DEBUG TEXT: This will show us what is happening
+        debugText = TextView(this).apply {
+            setTextColor(Color.RED)
+            setBackgroundColor(Color.argb(150, 0, 0, 0))
+            textSize = 12f
+            setPadding(20, 20, 20, 20)
+            text = "Waiting for board..."
+        }
+        val textParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        textParams.setMargins(20, 100, 0, 0)
+        root.addView(debugText, textParams)
 
         setupInjectedJS()
     }
@@ -46,14 +65,24 @@ class MainActivity : AppCompatActivity() {
                             window.__orsted = true;
                             setInterval(() => {
                                 const board = document.querySelector('cg-board');
-                                if (!board) return;
+                                if (!board) { 
+                                    window.OrstedBridge.log("No board found"); 
+                                    return; 
+                                }
                                 
                                 const rect = board.getBoundingClientRect();
-                                // Extract FEN from Lichess DOM
-                                const fenEl = document.querySelector('.round__app[data-fen]') || document.querySelector('[data-fen]');
-                                if (!fenEl) return;
-                                const fen = fenEl.getAttribute('data-fen');
                                 
+                                // Try multiple ways to find the FEN on Lichess
+                                let fenEl = document.querySelector('.round__app[data-fen]') || 
+                                            document.querySelector('[data-fen]') ||
+                                            document.querySelector('body[data-fen]');
+                                
+                                if (!fenEl) { 
+                                    window.OrstedBridge.log("No FEN found"); 
+                                    return; 
+                                }
+                                
+                                const fen = fenEl.getAttribute('data-fen');
                                 window.OrstedBridge.onFen(fen, rect.left, rect.top, rect.width, rect.height);
                             }, 1000);
                         }
@@ -66,15 +95,32 @@ class MainActivity : AppCompatActivity() {
 
     inner class WebAppInterface {
         @JavascriptInterface
+        fun log(msg: String) {
+            runOnUiThread { debugText.text = msg }
+        }
+
+        @JavascriptInterface
         fun onFen(fen: String, x: Float, y: Float, w: Float, h: Float) {
+            if (fen == lastFen) return
+            lastFen = fen
+
+            runOnUiThread { debugText.text = "FEN received. Analyzing..." }
+
             thread {
-                val bestMove = KotlinEngine.getBestMove(fen)
-                if (bestMove.length >= 4) {
-                    runOnUiThread {
-                        val density = resources.displayMetrics.density
-                        // Pass exact board coordinates to the overlay
-                        overlay.setArrow(bestMove, x * density, y * density, w * density)
+                try {
+                    val bestMove = KotlinEngine.getBestMove(fen)
+                    if (bestMove.length >= 4) {
+                        runOnUiThread {
+                            val density = resources.displayMetrics.density
+                            overlay.setArrow(bestMove, x * density, y * density, w * density)
+                            debugText.text = "Arrow: $bestMove"
+                        }
+                    } else {
+                        runOnUiThread { debugText.text = "Engine returned no move" }
                     }
+                } catch (e: Throwable) {
+                    val errorMsg = "Engine Crash: ${e.message}"
+                    runOnUiThread { debugText.text = errorMsg }
                 }
             }
         }
@@ -84,7 +130,7 @@ class MainActivity : AppCompatActivity() {
 class ArrowOverlayView(context: android.content.Context) : View(context) {
     private var arrow: String? = null
     private var bx = 0f; private var by = 0f; private var bs = 0f
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.STROKE; strokeWidth = 12f }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.STROKE; strokeWidth = 15f }
     private val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.FILL }
 
     fun setArrow(move: String, x: Float, y: Float, size: Float) {
