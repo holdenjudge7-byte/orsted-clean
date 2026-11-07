@@ -13,10 +13,6 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var overlay: ArrowOverlayView
-    private lateinit var panel: FloatingPanelView
-
-    private var currentElo = 2800
-    private var isTurbo = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,6 +24,7 @@ class MainActivity : AppCompatActivity() {
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+        
         webView.addJavascriptInterface(WebAppInterface(), "OrstedBridge")
         webView.loadUrl("https://lichess.org")
         root.addView(webView)
@@ -35,15 +32,6 @@ class MainActivity : AppCompatActivity() {
         overlay = ArrowOverlayView(this)
         overlay.isClickable = false
         root.addView(overlay)
-
-        panel = FloatingPanelView(this)
-        val density = resources.displayMetrics.density
-        val p = FrameLayout.LayoutParams((280 * density).toInt(), FrameLayout.LayoutParams.WRAP_CONTENT)
-        p.setMargins(20, 200, 0, 0)
-        panel.layoutParams = p
-        panel.onEloChange = { elo -> currentElo = elo }
-        panel.onTurboToggle = { turbo -> isTurbo = turbo }
-        root.addView(panel)
 
         setupInjectedJS()
     }
@@ -60,17 +48,13 @@ class MainActivity : AppCompatActivity() {
                                 const board = document.querySelector('cg-board');
                                 if (!board) return;
                                 
-                                const wrap = board.closest('.cg-wrap') || board.parentElement;
-                                const isFlipped = wrap && wrap.classList.contains('orientation-black');
                                 const rect = board.getBoundingClientRect();
-                                
-                                // Get FEN directly from Lichess
+                                // Extract FEN from Lichess DOM
                                 const fenEl = document.querySelector('.round__app[data-fen]') || document.querySelector('[data-fen]');
                                 if (!fenEl) return;
                                 const fen = fenEl.getAttribute('data-fen');
                                 
-                                // Only analyze if it's the user's turn (simplified)
-                                window.OrstedBridge.onFen(fen, rect.left, rect.top, rect.width, isFlipped);
+                                window.OrstedBridge.onFen(fen, rect.left, rect.top, rect.width, rect.height);
                             }, 1000);
                         }
                     """.trimIndent()
@@ -82,14 +66,14 @@ class MainActivity : AppCompatActivity() {
 
     inner class WebAppInterface {
         @JavascriptInterface
-        fun onFen(fen: String, x: Float, y: Float, w: Float, flipped: Boolean) {
+        fun onFen(fen: String, x: Float, y: Float, w: Float, h: Float) {
             thread {
-                val bestMove = KotlinEngine.getBestMove(fen, currentElo)
+                val bestMove = KotlinEngine.getBestMove(fen)
                 if (bestMove.length >= 4) {
                     runOnUiThread {
                         val density = resources.displayMetrics.density
-                        overlay.setArrow(bestMove, flipped, x * density, y * density, w * density)
-                        panel.setStatus("▶ $bestMove")
+                        // Pass exact board coordinates to the overlay
+                        overlay.setArrow(bestMove, x * density, y * density, w * density)
                     }
                 }
             }
@@ -100,26 +84,27 @@ class MainActivity : AppCompatActivity() {
 class ArrowOverlayView(context: android.content.Context) : View(context) {
     private var arrow: String? = null
     private var bx = 0f; private var by = 0f; private var bs = 0f
-    private var flip = false
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.STROKE; strokeWidth = 15f }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.STROKE; strokeWidth = 12f }
     private val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2ecc71"); style = Paint.Style.FILL }
 
-    fun setArrow(move: String, isFlipped: Boolean, x: Float, y: Float, size: Float) {
-        arrow = move; flip = isFlipped; bx = x; by = y; bs = size; invalidate()
+    fun setArrow(move: String, x: Float, y: Float, size: Float) {
+        arrow = move; bx = x; by = y; bs = size; invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val m = arrow ?: return
+        if (bs <= 0f) return
+        
         val sq = bs / 8f
-        fun cx(f: Int) = bx + (if (flip) 7 - f else f) * sq + sq / 2f
-        fun cy(r: Int) = by + (if (flip) r else 7 - r) * sq + sq / 2f
+        // Assuming White's perspective for Lichess default layout
+        fun cx(f: Int) = bx + f * sq + sq / 2f
+        fun cy(r: Int) = by + (7 - r) * sq + sq / 2f
 
         val c1 = m[0] - 'a'; val r1 = m[1] - '1'
         val c2 = m[2] - 'a'; val r2 = m[3] - '1'
         val x1 = cx(c1); val y1 = cy(r1); val x2 = cx(c2); val y2 = cy(r2)
 
-        // Shorten line so it doesn't overshoot the center
         val angle = Math.atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())
         val endX = (x2 - Math.cos(angle) * sq * 0.3).toFloat()
         val endY = (y2 - Math.sin(angle) * sq * 0.3).toFloat()
